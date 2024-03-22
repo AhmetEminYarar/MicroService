@@ -21,18 +21,6 @@ namespace EventBus.AzureServiceBus
             topicClient = createTopicClient();
         }
 
-        private ITopicClient createTopicClient()
-        {
-            if (topicClient == null || topicClient.IsClosedOrClosing)
-            {
-                topicClient = new TopicClient(EventBusConfig.EventBusConnectionString, EventBusConfig.DefaultTopicName, RetryPolicy.Default);
-            }
-            if (managementClient.TopicExistsAsync(EventBusConfig.DefaultTopicName).GetAwaiter().GetResult())
-                managementClient.CreateTopicAsync(EventBusConfig.DefaultTopicName).GetAwaiter().GetResult();
-
-            return topicClient;
-        }
-
         public override void Publish(IntegrationEvent @event)
         {
             var eventName = @event.GetType().Name;
@@ -58,21 +46,72 @@ namespace EventBus.AzureServiceBus
 
             if (!SubsManager.HasSubscripionForEvent(eventName))
             {
-                var subsClient= CreateSubsClientIfNotExists(eventName);
+                var subsClient = CreateSubsClientIfNotExists(eventName);
 
+                RegisterSubsClientMessageHandler(subsClient);
             }
+            logger.LogInformation("{eventName}", eventName, typeof(TH).Name);
+            SubsManager.AddSubscription<T, TH>();
         }
 
         public override void UnSubscribe<T, TH>()
         {
+            var eventName = typeof(T).Name;
+            try
+            {
+                var SubsClient = CreateSubsClient(eventName);
+                SubsClient.RemoveRuleAsync(eventName).GetAwaiter().GetResult();
+            }
+            catch (MessageNotFoundException)
+            {
+                logger.LogWarning("hata{evenName}", eventName);
+            }
+            logger.LogInformation("Bilgi {eventName}", eventName);
+            SubsManager.RemoveSubscripion<T, TH>();
+        }
 
+        private ITopicClient createTopicClient()
+        {
+            if (topicClient == null || topicClient.IsClosedOrClosing)
+            {
+                topicClient = new TopicClient(EventBusConfig.EventBusConnectionString, EventBusConfig.DefaultTopicName, RetryPolicy.Default);
+            }
+            if (managementClient.TopicExistsAsync(EventBusConfig.DefaultTopicName).GetAwaiter().GetResult())
+                managementClient.CreateTopicAsync(EventBusConfig.DefaultTopicName).GetAwaiter().GetResult();
+
+            return topicClient;
+        }
+
+        private void RegisterSubsClientMessageHandler(ISubscriptionClient subscriptionClient)
+        {
+            subscriptionClient.RegisterMessageHandler(
+                async (message, token) =>
+                {
+                    var eventName = $"{message.Label}";
+                    var messageData = Encoding.UTF8.GetString(message.Body);
+
+                    if (await ProcessEvent(ProcessEventName(eventName), messageData))
+                    {
+                        await subscriptionClient.CompleteAsync(message.SystemProperties.LockToken);
+                    }
+                },
+                new MessageHandlerOptions(ExceptionReceivedHandler) { MaxConcurrentCalls = 10, AutoComplete = false });
+        }
+
+        private Task ExceptionReceivedHandler(ExceptionReceivedEventArgs exceptionReceivedEventArgs)
+        {
+            var ex = exceptionReceivedEventArgs.Exception;
+            var context = exceptionReceivedEventArgs.ExceptionReceivedContext;
+
+            logger.LogError(ex, "Error", ex.Message, context);
+            return Task.CompletedTask;
         }
 
         private ISubscriptionClient CreateSubsClientIfNotExists(String eventName)
         {
             var subClient = CreateSubsClient(eventName);
 
-            var exists = managementClient.SubscriptionExistsAsync(EventBusConfig.DefaultTopicName, GetSubName(eventName)).GetAwaiter().GetResult();,
+            var exists = managementClient.SubscriptionExistsAsync(EventBusConfig.DefaultTopicName, GetSubName(eventName)).GetAwaiter().GetResult();
 
             if (!exists)
             {
@@ -80,7 +119,7 @@ namespace EventBus.AzureServiceBus
                 RemoveDefultRule(subClient);
             }
 
-            CreateRuleIfNotExists(ProcessEventName(eventName), subClient); 
+            CreateRuleIfNotExists(ProcessEventName(eventName), subClient);
 
             return subClient;
 
@@ -128,6 +167,16 @@ namespace EventBus.AzureServiceBus
             {
                 logger.LogWarning("the messing entity", RuleDescription.DefaultRuleName);
             }
+        }
+
+        public override void Dispose()
+        {
+            base.Dispose();
+            topicClient.CloseAsync().GetAwaiter().GetResult();
+            managementClient.CloseAsync().GetAwaiter().GetResult();
+            topicClient = null;
+            managementClient = null;
+
         }
     }
 }

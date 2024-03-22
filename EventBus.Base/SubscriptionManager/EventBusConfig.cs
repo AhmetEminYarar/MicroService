@@ -14,7 +14,7 @@ namespace EventBus.Base.SubscriptionManager
         public string SubcriberClientAppName { get; set; } = String.Empty;
         public string EventNamePrefix { get; set; } = String.Empty;
         public string EventNameSuffix { get; set; } = "IntegrationEvent";
-        public EventBusType MyProperty { get; set; } = EventBusType.RabbitMQ;
+        public EventBusType EventBusType { get; set; } = EventBusType.RabbitMQ;
         public object Connection { get; set; }
 
         public bool DeleteEventPreFix => !String.IsNullOrEmpty(EventNamePrefix);
